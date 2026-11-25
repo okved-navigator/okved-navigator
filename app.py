@@ -8,28 +8,34 @@ st.set_page_config(page_title="ОКВЭД-Навигатор", page_icon="🔍",
 
 @st.cache_resource
 def load_classifier(csv_path='okved_codes.csv'):
-    import csv
     data = []
-    # Пробуем разные кодировки, так как Windows Excel часто меняет их
+    # Пробуем разные кодировки и разные разделители
     for enc in ['cp1251', 'utf-8']:
-        try:
-            with open(csv_path, 'r', encoding=enc) as f:
-                reader = csv.reader(f)
-                header = next(reader) 
-                for row in reader:
-                    if not row: continue
-                    text = ",".join(row).strip()
-                    if ',' in text:
-                        parts = text.rsplit(',', 1)
-                        if len(parts) == 2:
-                            desc = parts[0].strip()
-                            code = parts[1].strip().rstrip('.')
-                            # Ищем коды ровно из 5 символов (например, 10.71)
-                            if len(code) == 5 and code[2] == '.':
-                                data.append({'description': desc, 'code': code})
-            break # Если успешно прочитали, выходим из цикла кодировок
-        except Exception:
-            continue
+        for sep in [',', ';', '\t']:
+            try:
+                # Читаем файл
+                df_raw = pd.read_csv(csv_path, encoding=enc, sep=sep, header=None, on_bad_lines='skip')
+                data = []
+                for index, row in df_raw.iterrows():
+                    # Склеиваем всю строку в один текст
+                    text = " ".join([str(x) for x in row.values if pd.notna(x)])
+                    
+                    # Ищем последний код по шаблону XX.XX (или XX.XX.X)
+                    import re
+                    match = re.search(r'([0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?)\s*$', text)
+                    if match:
+                        code = match.group(1).strip()
+                        desc = text[:match.start()].strip()
+                        # Берем только 4-значные коды (например 10.71)
+                        if len(code) == 5:
+                            data.append({'description': desc, 'code': code})
+                
+                if len(data) > 100: # Если нашли больше 100 кодов, значит формат подошел, останавливаемся
+                    break
+            except Exception as e:
+                continue
+        if len(data) > 100:
+            break
 
     df = pd.DataFrame(data)
     if df.empty:
