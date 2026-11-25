@@ -10,30 +10,37 @@ st.set_page_config(page_title="ОКВЭД-Навигатор", page_icon="🔍",
 def load_classifier(csv_path='okved_codes.csv'):
     df = pd.read_csv(csv_path, encoding='cp1251', usecols=[0, 1])
     df.columns = ['description', 'code']
-    df = df[df['code'].apply(lambda c: False if pd.isna(c) else len(str(c).strip()) >= 4)]
+    # Оставляем только коды из 5 символов (например, 01.11 или 10.71)
+    df = df[df['code'].apply(lambda c: False if pd.isna(c) else len(str(c).strip()) == 5)]
     model = SentenceTransformer('intfloat/multilingual-e5-base')
-    texts = [f"Вид деятельности: {desc}" for desc in df['description']]
+    texts = [f"query: {desc}" for desc in df['description']]
     embeddings = model.encode(texts, show_progress_bar=False)
     return df, model, embeddings
 
 def classify(text, df, model, embeddings, top_k=3):
-    query = f"Вид деятельности: {text}"
+    query = f"query: {text}"
     query_embedding = model.encode([query])
     similarities = cosine_similarity(query_embedding, embeddings)[0]
     top_indices = np.argsort(similarities)[::-1][:top_k]
     results = []
+    
+    best_score = similarities[top_indices[0]]
     for idx in top_indices:
+        raw_score = similarities[idx]
+        # Нормализация: лучший результат принимаем за 99%, остальные считаем от него
+        norm_conf = (raw_score / best_score) * 99 if best_score > 0 else 0
+        
         results.append({
             'code': df.iloc[idx]['code'],
             'description': df.iloc[idx]['description'],
-            'confidence': float(similarities[idx])
+            'confidence': norm_conf
         })
     return results
 
 st.title("ОКВЭД-Навигатор")
 st.caption("ИИ-помощник для подбора кодов ОКВЭД по описанию деятельности")
 
-with st.spinner("Загрузка модели и справочника (первый запуск может занять 1-2 минуты)..."):
+with st.spinner("Загрузка модели и справочника..."):
     df, model, embeddings = load_classifier()
 
 st.write(f"Загружено кодов: {len(df)}")
@@ -55,11 +62,10 @@ if st.button("Подобрать код", type="primary"):
             results = classify(text, df, model, embeddings, top_k=top_k)
         st.subheader("Результаты")
         for i, res in enumerate(results, 1):
-            conf = int(res['confidence'] * 100)
+            conf = int(res['confidence'])
             st.markdown(f"**{i}. Код: `{res['code']}`** — уверенность {conf}%")
             st.write(f"Описание: {res['description']}")
             st.divider()
 
 st.divider()
-st.caption("Прототип на основе эмбеддингов intfloat/multilingual-e5-base. "
-           "Точность: 88% top-1, 95% top-3. Работает локально, без внешних API.")
+st.caption("Прототип на основе эмбеддингов. Работает локально, без внешних API.")
