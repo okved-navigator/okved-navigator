@@ -7,18 +7,35 @@ from sklearn.metrics.pairwise import cosine_similarity
 st.set_page_config(page_title="ОКВЭД-Навигатор", page_icon="🔍", layout="centered")
 
 @st.cache_resource
+@st.cache_resource
 def load_classifier(csv_path='okved_codes.csv'):
-    df = pd.read_csv(csv_path, encoding='cp1251', usecols=[0, 1])
-    df.columns = ['description', 'code']
-    # Оставляем только коды из 5 символов (например, 01.11 или 10.71)
-    df = df[df['code'].apply(lambda c: False if pd.isna(c) else len(str(c).strip()) == 5)]
+    # Читаем файл построчно, так как в нем могут быть сложности с кодировкой и кавычками
+    import csv
+    data = []
+    with open(csv_path, 'r', encoding='cp1251') as f:
+        reader = csv.reader(f)
+        header = next(reader) # пропускаем заголовок
+        for row in reader:
+            if not row: continue
+            text = ",".join(row) # склеиваем строку обратно
+            # Ищем последнюю запятую, чтобы отделить код от описания
+            if ',' in text:
+                desc, code = text.rsplit(',', 1)
+                data.append({'description': desc.strip(), 'code': code.strip()})
+    
+    df = pd.DataFrame(data)
+    
+    # Оставляем только 4-значные коды (длина 5, например 10.71)
+    # Убираем лишние точки в конце и пробелы
+    df['code'] = df['code'].str.rstrip('.')
+    df = df[df['code'].apply(lambda c: len(str(c).strip()) == 5)]
+    
     model = SentenceTransformer('intfloat/multilingual-e5-base')
-    texts = [f"query: {desc}" for desc in df['description']]
+    texts = [f"passage: Вид деятельности: {desc}" for desc in df['description']]
     embeddings = model.encode(texts, show_progress_bar=False)
     return df, model, embeddings
-
 def classify(text, df, model, embeddings, top_k=3):
-    query = f"query: {text}"
+    query = f"query: Деятельность: {text}"
     query_embedding = model.encode([query])
     similarities = cosine_similarity(query_embedding, embeddings)[0]
     top_indices = np.argsort(similarities)[::-1][:top_k]
@@ -27,7 +44,6 @@ def classify(text, df, model, embeddings, top_k=3):
     best_score = similarities[top_indices[0]]
     for idx in top_indices:
         raw_score = similarities[idx]
-        # Нормализация: лучший результат принимаем за 99%, остальные считаем от него
         norm_conf = (raw_score / best_score) * 99 if best_score > 0 else 0
         
         results.append({
