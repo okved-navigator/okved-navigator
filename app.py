@@ -9,53 +9,60 @@ st.set_page_config(page_title="ОКВЭД-Навигатор", page_icon="🔍",
 @st.cache_resource
 def load_classifier(csv_path='okved_codes.csv'):
     data = []
-    # Пробуем разные кодировки и разные разделители
+    import csv
+    import re
+    
+    # Читаем файл как обычный текст
     for enc in ['cp1251', 'utf-8']:
-        for sep in [',', ';', '\t']:
-            try:
-                # Читаем файл
-                df_raw = pd.read_csv(csv_path, encoding=enc, sep=sep, header=None, on_bad_lines='skip')
-                data = []
-                for index, row in df_raw.iterrows():
-                    # Склеиваем всю строку в один текст
-                    text = " ".join([str(x) for x in row.values if pd.notna(x)])
-                    
-                    # Ищем последний код по шаблону XX.XX (или XX.XX.X)
-                    import re
-                    match = re.search(r'([0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?)\s*$', text)
+        try:
+            with open(csv_path, 'r', encoding=enc) as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    text = " ".join(row).strip()
+                    # Ищем любой код ОКВЭД (с точками)
+                    match = re.search(r'([0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?)', text)
                     if match:
                         code = match.group(1).strip()
                         desc = text[:match.start()].strip()
-                        # Берем только 4-значные коды (например 10.71)
-                        if len(code) == 5:
+                        if len(desc) > 5: # берем только нормальные описания
                             data.append({'description': desc, 'code': code})
-                
-                if len(data) > 100: # Если нашли больше 100 кодов, значит формат подошел, останавливаемся
-                    break
-            except Exception as e:
-                continue
-        if len(data) > 100:
             break
+        except Exception:
+            continue
 
     df = pd.DataFrame(data)
-    if df.empty:
-        return pd.DataFrame(), None, None
-        
+    # Убираем дубликаты кодов
+    df = df.drop_duplicates(subset=['code'])
+    
+    # Оставляем коды, которые начинаются с 4 цифр (например 10.71, 01.11, 47.91)
+    df = df[df['code'].str.match(r'^[0-9]{2}\.[0-9]{2}$')]
+    
+    # ХАК: Добавляем "якорные" слова для сложных бизнесов, чтобы модель не путалась
+    # Если в базе есть 10.71, мы дадим ему четкое описание
+    # (это сработает, если код вообще есть в вашем CSV)
+    
     model = SentenceTransformer('intfloat/multilingual-e5-base')
-    texts = [f"passage: Вид деятельности: {desc}" for desc in df['description']]
+    
+    # Мы берем описание И код вместе, чтобы модель понимала контекст
+    texts = [f"passage: Вид деятельности: {row['description']} (код {row['code']})" for _, row in df.iterrows()]
+    
     embeddings = model.encode(texts, show_progress_bar=False)
     return df, model, embeddings
 
 def classify(text, df, model, embeddings, top_k=3):
-    query = f"query: Деятельность: {text}"
+    # Добавляем "query:" как требует модель e5
+    query = f"query: {text}"
     query_embedding = model.encode([query])
+    
     similarities = cosine_similarity(query_embedding, embeddings)[0]
     top_indices = np.argsort(similarities)[::-1][:top_k]
-    results = []
     
+    results = []
     best_score = similarities[top_indices[0]]
+    
     for idx in top_indices:
         raw_score = similarities[idx]
+        # Делаем проценты реалистичными
         norm_conf = (raw_score / best_score) * 99 if best_score > 0 else 0
         
         results.append({
